@@ -5,3 +5,5 @@ Predicting the Price in USD of company in acquisition process (CrunchBase)
 * The continuous variable total fundings, number of funding rounds and number of operations years are used to quantify the Price in USD of any company.
 * The total funding represents the money for a startup that can prove the worthiness of its model and products
 * This multiple linear regression will help to quantify and predict the price of a business in the acquisition based on those predictor variables
+* The .htlm file can download and read for the complete analysis report
+* The .rmd file for code reading in R-studio
