@@ -1,0 +1,427 @@
+---
+title: "Predicting the Price in USD of company in accquisition"
+author: "LongTran"
+date: "13/12/2020"
+output:
+  html_document:
+    fig_caption: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 2
+    df_print: kable
+    toc_float:
+      collapsed: no
+---
+
+```{r, include=FALSE}
+# Do not edit this code block/chunk
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning = FALSE, fig.width = 16/2.5, fig.height = 9/2.5)
+```
+
+
+```{r Packages}
+# Load all necessary packages here:
+library(tidyverse) 
+library(janitor)
+library(moderndive)
+library(here)
+library(knitr)
+library(readxl)
+library(MASS)    #for box-cox
+library(car)    #for vif and qqplot() and 3d graphs
+library(olsrr)   # cook's distance
+library(splines)
+library(kableExtra)
+library(dplyr)
+library(plotly)   # for interactive graphs
+library(lspline)   # for linear spline
+library(ggfortify) #residual plots
+```
+
+```{r data wrangling}
+companies_dat = read_xlsx("C:/Users/longm/Documents/STAT4550_Final/Crunchbase_monthly_Companies.xlsx")
+acquisition_dat = read_xlsx("C:/Users/longm/Documents/STAT4550_Final/Crunchbase_monthly_Acquisition.xlsx")
+
+#wrangling for the companies data set
+companies= companies_dat %>%
+  dplyr::select(c("name","market","funding_total_usd","status","country_code","funding_rounds","founded_year")) %>%
+  mutate(market=as.factor(market),status=as.factor(status),country_code=as.factor(country_code))
+
+#There are more 16286 NA values from the data set, approximate 33% of the data set.
+companies_complete=companies %>%
+  mutate(num_years=2014-founded_year) %>%
+  na.omit()
+                                  
+colnames(companies_complete)=c("company_name","Market","funding_total_usd","Operation_Status","country_code","funding_rounds","founded_year","num_years")
+
+#wrangling for the acquisition data set
+acquisition= acquisition_dat %>%
+  dplyr::select(c("company_name","company_market","acquirer_market","acquirer_country_code","price_amount","price_currency_code" )) %>%
+  mutate(company_market=as.factor(company_market),acquirer_market=as.factor(acquirer_market),acquirer_country_code=as.factor(acquirer_country_code))
+
+#function to convert other currencies back to USD for easier analysis. This is a average exchange rate of those currencies in 2014 to USD.
+usd_convert= function(x){
+  if(x["price_currency_code"]=="USD"){rate=1}
+  else if(x["price_currency_code"]=="AUD"){rate=0.902813}
+  else if(x["price_currency_code"]=="CAD"){rate=0.905912}
+  else if(x["price_currency_code"]=="EUR"){rate=1.32916}
+  else if(x["price_currency_code"]=="GBP"){rate=1.647701}
+  else if(x["price_currency_code"]=="JPY"){rate=0.009473}
+  else if(x["price_currency_code"]=="NOK"){rate=0.159195}
+  else if(x["price_currency_code"]=="NZD"){rate=0.8306}
+  else if(x["price_currency_code"]=="SAR"){rate=0.26643}
+  else if(x["price_currency_code"]=="SEK"){rate=0.146204}
+  else {rate=0.26643}
+  return(rate)
+}
+acquisition_complete=na.omit(acquisition)
+acquisition_complete['rate_to_USD']= apply(acquisition_complete, 1, FUN = usd_convert)
+acquisition_complete=acquisition_complete %>%
+  mutate(price_amount_USD=price_amount*rate_to_USD)
+
+#Final join the data set between the acquisition_complete and companies_complete
+tidy_joined_dataset= acquisition_complete %>%
+  inner_join(companies_complete,by = c("company_name"))
+
+#drop the unnecessary columns in the data set( "price_amount","price_currency_code","rate_to_USD")
+tidy_joined_dataset=tidy_joined_dataset %>%
+  filter(price_amount_USD>0) %>%
+  dplyr::select(-c("price_amount","price_currency_code","rate_to_USD","Market","company_market","acquirer_market","Operation_Status","country_code","founded_year"))
+```
+***
+
+
+# I. Introduction
+In the new era of Internet and technology, there are more and more startups now operating from over the world.Some of them are really successful but the majority of the startups failed and collapsed after time. However, some startups or small companies are taken or acquired by other big corporations to keep developing. For example, Instagrams and WhatsApp are the most popular companies acquired by big companies and keep growing out successfully. One of the challenges for the startups, investments or acquirers are how they can quantify or predict the price of that company. This study aims to understand the relationship between the price of the company in the acquisition with the total fundings which they received from the investors, the number of funding rounds, how long they are operating from the founded year and the difference between other regions. A model will be constructed to depict this relationship.
+
+The data used in this study is obtained from CrunchBase company. CrunchBases is owned and operated by TechCrunch. This is a platform for finding business information about private and public companies. In Crunchbase, we can find the investments and funding information, founding members and individuals in leadership positions, mergers and acquisition, news and industry trends. The dataset is downloaded from https://public.tableau.com/en-us/s/resources.
+
+The continuous variable total fundings, number of funding rounds and number of operations years are used to quantify the Price in USD of any company. The total funding represents the money for a startup that can prove the worthiness of its model and products. At the beginning, it is impossible to prove any hypothetical business to success. The total funding in this dataset is the total amount money that a company receives during their operation time. The total funding is the sum of the money from the number of funding rounds. There are other types of funding rounds available to any startup. And it depends on the industry and the level of interest among potential investors. In the business world, the “seed” funding round is popular at the beginning. Next, these funding rounds can be followed by Series A,B and C funding rounds. According to Investopedia, an acquisition is when one company purchases most or all of another company’s share to gain the control of that company. Acquisitions are very common in the business world, it may occur with the target company's approval, or in spite of its disapproval. Because CrunchBase is the business database company that keeps track of all the information companies worldwide, the acquired prices are based on several currencies. So every price is converted to USD in the exchange rate in 2014 which is the same time as the updated database.
+There is limited information or data that can fully describe the value of a company on the market that can help us evaluate the value of the company. The goal of this study is to build a model that can help to predict the price of a company in USD. The total funding that a company receives from investors may be related to the price value of the company in the market. Moreover, the number of funding rounds and operation years may contribute in explaining the variability in the acquired prices of a company. 
+
+After organizing the data, there are 868 companies represented in the data set.
+
+```{r sample table}
+ companies_sample = tidy_joined_dataset %>%
+  dplyr::select(c("company_name","price_amount_USD","funding_total_usd","acquirer_country_code","funding_rounds","num_years"))
+
+sample <- companies_sample %>% 
+  ungroup() %>%
+  sample_n(5)
+
+sample %>%
+    dplyr::select(c("company_name","price_amount_USD","funding_total_usd","acquirer_country_code","funding_rounds","num_years")) %>%
+  kable(caption = "Table 1.Sample for 5 randomly chosen companies of the data set used in this study") %>%
+  kable_styling(full_width = F)
+
+```
+
+
+***
+
+
+***
+
+
+
+# II. Exploratory data analysis
+
+
+***
+
+```{r Exploratory}
+tidy_joined_dataset %>%
+  dplyr::summarize(n= n(),
+            min = min(price_amount_USD , na.rm = T), 
+            median = median(price_amount_USD , na.rm = T), 
+            mean = mean(price_amount_USD , na.rm = T), 
+            max = max(price_amount_USD , na.rm = T),
+            sd = sd(price_amount_USD , na.rm = T)) %>%
+            kable(caption = "Table 2: Summary for the Price amount in USD") %>%
+            kable_styling(full_width = F)
+
+#price_amount_USD=Median :18.436
+#funding_total_usd:1.500e+07
+#funding_rounds: 2.000
+#num_years=10
+```
+
+```{r   Price, fig.cap = "Figure 1. Distribution for the Price in USD for individual companies ", fig.align = "center"}
+
+ggplot(tidy_joined_dataset,  aes(x= price_amount_USD)) +
+  geom_histogram(bins = 20, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "Price in USD") +
+    theme_bw()
+
+```
+Figure 1
+Our total sample size is 868 (Table 2). The mean of the Price in USD is about 335,657,357 USD, which is far greater than the median 101,500,000, indicating that the Price in USD distribution is heavily right-skewed. It can easily be observed in Figure 1. Most of the acquired companies have their price within 5.0e+09-mark. I also notice the existence of some very extreme cases in this plot (outliers).
+
+```{r Total_funding_in_USD, fig.cap = "Figure 2. Distribution for the Price in USD for individual companies ", fig.align = "center"}
+
+ggplot(tidy_joined_dataset,  aes(x= funding_total_usd)) +
+  geom_histogram(bins = 20, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "Total funding in USD") +
+    theme_bw()
+
+```
+Figure 2
+The distribution of the Total funding in USD (Figure 2), which measures the total money a company receives in their funding period, seems to be right-skewed. Most of the acquired companies have the total funding in USD within 5.0e+08-mark. It also noticeable the existence of some very extreme cases in the figure 2 (outliers).
+
+
+```{r Number of operation years, fig.cap = "Figure 3. Distribution for the number of operation years for individual companies ", fig.align = "center"}
+
+ggplot(tidy_joined_dataset,  aes(x= num_years)) +
+  geom_histogram(bins = 20, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "Number of operation years") +
+    theme_bw()
+
+```
+Figure 3
+The distribution of the number of operation years (until the year of 2014) seems to resemble a bell shape although a significant right-skewed due to the existence of some extreme cases. The majority of the acquired companies are within 40 years of operation.
+
+
+```{r number of funding rounds, fig.cap = "Figure 4. Distribution for the number of funding rounds for individual companies ", fig.align = "center"}
+
+ggplot(tidy_joined_dataset,  aes(x= funding_rounds)) +
+  geom_histogram(bins = 11, fill = "#f9f906", color = "#6109de", alpha = 0.7) +
+  labs(x = "Number of funding rounds") +
+    theme_bw()
+
+```
+Figure 4
+The distribution of the number of funding rounds seems to be right-skewed. The majority of the companies have the number of funding rounds within 8 rounds.
+
+```{r Price and funding, fig.cap = "Figure 5. Scatter plot between the Pricing in USD and total funding in USD ", fig.align = "center"}
+p1 <- ggplot(tidy_joined_dataset, aes(x= funding_total_usd, y= price_amount_USD,color=num_years,label=company_name)) +
+  geom_point(alpha = 0.3) +
+  scale_color_gradient(low="#bfeb14", high="#ff6600")+
+  scale_color_gradient(low="#bfeb14", high="#ff6600") +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1)+
+  labs(y = "price_amount_USD", x = "funding_total_usd") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", 
+                                    fill=NA, 
+                                    size=0.5))
+
+ggplotly(p1)
+```
+Figure 5
+The scatterplot shows that there seems to be some correlation between the Price in USD and the total funding in USD, without implying any causal effect, companies with a higher total money funding tend to also have been evaluated in high value ( price in USD) on the market. I also notice there are several extreme cases in the plot that significantly affects the trend of the linear line. One company called Whatsapp is taken by Facebook and only receives a little amount of funding but a remarkably acquired price amount in USD. And the company called Fisker Automotive receives a huge amount of funding but low in acquired price. Those two companies consider the outliers but those are valid and cannot delete out of the model.
+
+```{r Price and number of funding rounds, fig.cap = "Figure 6. Scatter plot between the Pricing in USD and number of funding rounds ", fig.align = "center"}
+p1 <- ggplot(tidy_joined_dataset, aes(x= funding_rounds, y= price_amount_USD,size=funding_total_usd,label=company_name)) +
+  geom_point(alpha = 0.3) +
+  scale_color_gradient(low="#bfeb14", high="#ff6600")+
+  scale_color_gradient(low="#bfeb14", high="#ff6600") +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1)+
+  labs(y = "price_amount_USD", x = "funding_rounds") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", 
+                                    fill=NA, 
+                                    size=0.5))
+
+ggplotly(p1)
+```
+Figure 6.
+The scatter plot shows that there seems to be a slight correlation between the Price in USD and the number of funding rounds.
+
+```{r Price and number of operation years, fig.cap = "Figure 7. Scatter plot between the Pricing in USD and number operation years ", fig.align = "center"}
+p1 <- ggplot(tidy_joined_dataset, aes(x= num_years, y= price_amount_USD,size=funding_total_usd,label=company_name)) +
+  geom_point(alpha = 0.3) +
+  scale_color_gradient(low="#bfeb14", high="#ff6600")+
+  scale_color_gradient(low="#bfeb14", high="#ff6600") +
+  geom_smooth(method = "lm", se = FALSE, size = 0.4, colour= "red") +
+  geom_smooth(method = "loess", se = TRUE, size = 0.4, colour="#3080cf", fill = "#3080cf", alpha = 0.1)+
+  labs(y = "price_amount_USD", x = "num_years") +
+  theme(panel.grid.major =  element_line(colour = "#DCDCDC"),
+        panel.grid.minor = element_line(colour = "#DCDCDC"),
+        axis.line = element_line(colour = "black"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", 
+                                    fill=NA, 
+                                    size=0.5))
+
+ggplotly(p1)
+```
+Figure 7.
+The scatter plot shows that there seems to be a slight correlation between the Price in USD and the number of operation years
+
+```{r EI_boxplot_levels, fig.cap = "Figure 7.1 Boxplot of relationship between  the price_amount_USD for a company for the acquirer_country_code", fig.align = "center"}
+ggplot(tidy_joined_dataset, aes(x= acquirer_country_code, y=price_amount_USD)) +
+  geom_boxplot() +
+  labs(y = "price_amount_USD confirmed cases per 10,000", x = "acquirer_country_code Support Index levels") +
+  theme_bw()
+
+```
+# III. Multiple linear regression
+
+## i. Methods
+
+	The initial models is the following:
+
+***
+
+```{r  primary_model}
+
+first_model <- lm(price_amount_USD ~  funding_total_usd + funding_rounds + num_years + acquirer_country_code, data = tidy_joined_dataset)
+
+summary(first_model)
+
+```
+I intended to use a linear model on the given data, then performed a residual analysis, as an in-sample validation method, to detect any systematic departure from the assumptions upon which the model is built: normality, independence, and homoscedasticity of the residuals.
+
+ In Figure 8, the 4 plots present the residual analysis that we can observe the validity of the model with four assumptions of linear model. The first left plot between the fitted value and residuals is violated by the constant variance assumptions. And the several observations seem to significantly affect the 0 horizontal line. Moreover, the Normal Q-Q plot at the top right shows the violation of the normality assumption.
+
+
+Due to the violation of the normality and homoscedasticity assumption mentioned above, I recognize that a transformation is much needed. Using the method of log-likelihood (Figure 9), our dependent variable (CCC) will be transformed by the factor of 0.10101. As we can observe from the Box-Cox transformation plot below, the optimal value is quite nere 0, which means the log transformation in the Box-Cox function. To simply the transformation, the log transformation will be use for the transformed Price in USD variable
+
+
+And also from the figure 5 (Scatter plot between the Pricing in USD and total funding in USD), the slope of the trend line in the plot might change in different funding total in USD, because most of the data points are within 5.0e+0.8. I recognized that a linear model might not be the best model to capture this complex behaviour of the given data, so I decided to make use of the natural spline model. Based on the rule of thumb that we covered in class, I decided to have 4 knots in the model.
+
+
+
+
+```{r qqplots of transformed model ,fig.cap= "Figure 8. Residual analysis graphs", fig.align = "center"}
+
+autoplot(first_model)
+
+```
+
+
+```{r Box_cox, fig.cap = "Figure 9. Graph resulting from a Box Cox Test", fig.align = "center"}
+transformation_test = MASS::boxcox(first_model)
+lambda = transformation_test$x[which(transformation_test$y == max(transformation_test$y))]
+```
+From figure 9, the plot has shown more promising results: the top left plot shows the heteroscedasticity is preserved. It does not show any pattern around the 0 horizontal line, and the outliers do not significantly affect the trend of the given data. 
+The normality assumption is much better as we can observe from the top right plot (Normal Q-Q plot). 
+Moreover, the figure 8 shows the distribution of transformed price in USD seems assembly bell shaped than the previous model. It just slightly left-skewed due to some influential points.
+
+```{r rez_dis after transformed, fig.cap = "Figure 9. Residuals distribution for the new transformed model", fig.align = "center"}
+
+#The Box-Cox transformation value is quite
+tidy_joined_dataset["price_amount_USD"] <- log(tidy_joined_dataset$price_amount_USD)
+
+#2nd model with knots with 
+second <- lm(price_amount_USD ~  ns(funding_total_usd,df=4) + funding_rounds + num_years +acquirer_country_code, data = tidy_joined_dataset)
+
+#residual 2nd
+autoplot(second)
+
+#residual 2nd model
+ggplot(second, aes(x = second$residuals)) +
+  geom_histogram(bins = 20, color = "#ff9999", fill = "#e6005c")+
+  labs(x = "Residuals") +
+  theme_bw()
+```
+
+VIF table
+To ensure that multicollinearity is not a problem in the transformed model, the VIF values were calculated for the variables in the transformed model. This indicates that there is a moderate correlation between the predictor variables. Since there is not a lot of multicollinearity between the predictor variables, the statistical power of the model is not greatly reduced. 
+
+```{r vif_test}
+car::vif(second)
+```
+
+## ii. Model Results and Interpretation
+```{r 2nd model}
+
+summary(second)
+
+```
+
+
+Given the nature of splines, the interpretability of this model coefficient is deemed futile. The goal of this model is to help us predict the price of the company in the market in the acquisition process. However, the price in USD is in the log transformed and we need to transform back if we need a meaningful outcome.To focus on examining the coefficients and their relative significance compared to other models relies on Omnibus test results that we will go over in the ANOVA table analysis section.
+
+However, in the result summary table of the transformed model, the funding_total_inUSD, funding rounds, number of operation years have the p-value <0.05 and it each of this variable shows the statistically significant result with the transformed Price in USD if it stand alone in the model
+
+Whereas the acquirer country were found to be insignificant with p-values > 0.05 for each categorical level.
+
+Seeing the adjusted R-squared of 0.2627 using our model, I found that it explains quite a lot of variability of the transformed price in USD of each company, coupled with the significance of the predictors and very low p-value of 2.2e-16 for our model. It leads to the conclusion that this model is helpful in its explanatory ability.
+
+***
+
+## iii. Inference for multiple regression
+
+```{r   transf_anova_table}
+ kable(anova(second), 
+       digits = 4,
+       caption = "Table 6. ANOVA Table") %>%
+  kable_styling(full_width = F)
+
+```
+Interpretation of the ANOVA table result from table 6:
+
+The funding total USD with 3 knots with 4 degrees of freedom keeps adding 627.9451 sum of squares. With an F value = 60.4081 and p-value = 0.0001, we can conclude that the Stringency Index alone in the model explains a significant amount of variability of transformed price in USD.
+
+The number of funding rounds with 1 degree of freedom keeps adding 22.6818 sum of squares. With an F value = 8.7279 and p-value = 0.0032, we can conclude that the model with the number of funding rounds,given that the funding total USD is in the model, is statistically significant.
+
+The number of operation years with 1 degree of freedom keeps adding 47.4809 sum of squares .With an F value = 8.18.2706 and p-value = 0.0001, we can conclude that the model with the number of operation years, given that the funding total USD and number of funding rounds are in the model, is statistically significant.
+
+The acquirer countries with 29 degrees of freedom keep adding 195.5342 sum of squares. With an F value =2.5945 and p-value= 0.0001, we can conclude that the model with the acquirer countries, given that the funding total USD, number of funding rounds and number of operation years, is statistically significant.
+
+
+
+For the 95% Prediction Intervals, any company with funding total in USD equals to its median 1.500e+07, the number of funding rounds equal to its median 2 rounds, the acquirer is from USA and they have 1 year in the market (operation time), their log of Price in USD can be predicted is 17.95792 with the lower limit 14.78480 and upper limit 21.13104.
+
+With those companies holding the same value funding total equals to its median 1.500e+07 in USD, the number of funding rounds equal to its median 2 rounds and the acquirer is from USA. The Prediction Interval below shows the predicted log of Price in USD for number of operation years (at 1,5,10,15).
+
+```{r transf_model_PI}
+
+
+values = c(1,5,10,15)
+
+PI <- data.frame(predict(second, 
+              newdata=data.frame(funding_total_usd=1.500e+07,
+                                   funding_rounds= 2.000	,
+                                   acquirer_country_code = "USA", 
+                                 num_years = values), 
+              interval="prediction", level=.95))
+PI$num_years <- values
+
+PI <- PI %>%
+  dplyr::select(c(num_years, fit, lwr, upr)) 
+colnames(PI) <- c("num_years" , "Point Estimate" , "Lower Limit" , "Upper Limit")
+
+kable(PI,
+    digits = 5,
+    caption = "Table 7. The 95% Prediction intervals for the Price in USD, where number of operationn years = 1,5, 10, 15,  respectively, for funding_total_usd equal to its median = 1.500e+07, funding_rounds equal to its median = 2, and the acquirer_country is USA.") %>%
+  kable_styling(full_width = F)
+
+
+#price_amount_USD=Median :18.436
+#funding_total_usd:1.500e+07
+#funding_rounds: 2.000
+#num_years=10
+
+```
+# IV. Discussion 
+
+## i. Conclusions
+In conclusion, the interpretability is sometimes to be traded for the sake of a better model. The analysis shows that the model I proposed seems to be helpful as it explains quite good amount of variability in Price in USD (about 29.24%)
+
+The analysis also shows some evidence to suggest that the Price in USD of a company in acquisition transaction is positively correlated with total funding in USD, which aligns with my expectation, for the more of the funding could somehow represent for the potential and worthiness of that company. Moreover, it is also positively correlated with the number of funding rounds and number of operation years in spite of that relationships are quite not strong in my expectation.
+
+## ii. Limitations
+
+First limitation I encountered with this predictive model is the data available. The data set is published by Crunch Based company and the it does not show in details some interesting variables that I think it will contribute in the model. Moreover, some notable outliers and points with high leverage that valid and cannot be eliminate from the model. It leads to the significantly effect on the power of the model.
+
+The categorical variable (accquirer_country_code) has many levels and I do not have time and knowledge to handle this situation. Some strategies in the Internet with the help with rigde or lasso Regression, but I do not think it would help me in this situation. 
+
+The choice to use a non-linear model made the interpretation of the relationship between the variables more complex and less straightforward, which is not a bad thing when used appropriately. However, no test was done to check for overfitting, so the adequacy of the complexity of the model cannot be determined.
+
+## iii. Further questions
+
+As I mentioned above, it need some technique to deal with the categorical variable with many levels. 
+
+# V. Citations and References
+1. https://public.tableau.com/en-us/s/resources/
+2. https://www.investopedia.com/articles/personal-finance/102015/series-b-c-funding-what-it-all-means-and-how-it-works.asp
+3. https://about.crunchbase.com/about-us/
